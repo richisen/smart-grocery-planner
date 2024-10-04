@@ -32,7 +32,7 @@ function ChatInterface({ onMealPlanGenerated, onChatMessage }) {
         if (messages.length === 0) {
             getAIResponse(INITIAL_PROMPT, true);
         }
-    }, [getAIResponse]);
+    }, []); // Remove getAIResponse from the dependency array
 
     const handleUserInput = async () => {
         if (input.trim() === '') return;
