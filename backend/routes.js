@@ -3,16 +3,45 @@ const router = express.Router();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { searchProducts } = require('./krogerApi');
 
-// Initialize Gemini AI
 const apiKey = process.env.GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(apiKey);
 
-// Function to generate meal plan using Gemini API
-async function generateMealPlan(userInput) {
-    try {
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+async function generateGeminiResponse(prompt, chatHistory, isInitial = false) {
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-        const prompt = `Generate a meal plan based on the following preferences: ${userInput}. Please provide the response in JSON format without any markdown formatting or code block syntax. The JSON should have this structure:
+    let formattedHistory = chatHistory.map(msg => ({
+        role: msg.isUser ? 'user' : 'model',
+        parts: [{ text: msg.text }],
+    }));
+
+    if (isInitial) {
+        formattedHistory = [];
+    }
+
+    const chat = model.startChat({
+        history: formattedHistory,
+    });
+
+    const result = await chat.sendMessage(prompt);
+    return result.response.text();
+}
+
+router.post('/chat', async (req, res) => {
+    try {
+        const { message, history, isInitial } = req.body;
+        const response = await generateGeminiResponse(message, history || [], isInitial);
+        res.json({ message: response });
+    } catch (error) {
+        console.error('Error in chat route:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.post('/generate-meal-plan', async (req, res) => {
+    try {
+        const { chatHistory } = req.body;
+
+        const prompt = `Based on the following conversation, generate a meal plan. The meal plan should be in JSON format with the following structure:
     {
       "meals": [
         {
@@ -21,87 +50,70 @@ async function generateMealPlan(userInput) {
         },
         ...
       ]
-    }
-    Ensure all ingredient lists are properly formatted arrays.`;
+    }`;
 
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        let text = response.text();
-        console.log('Gemini API Response:', text);
+        const mealPlanText = await generateGeminiResponse(prompt, chatHistory);
+        const mealPlan = JSON.parse(mealPlanText);
 
-        // Clean up the JSON
-        text = text.replace(/\n/g, '').replace(/\r/g, '').trim();
-        text = text.replace(/,\s*]/g, ']'); // Remove trailing commas in arrays
-        text = text.replace(/,\s*}/g, '}'); // Remove trailing commas in objects
+        // Generate shopping list using Kroger API
+        const shoppingList = await generateShoppingList(mealPlan);
 
-        try {
-            return JSON.parse(text);
-        } catch (parseError) {
-            console.error('JSON Parse Error:', parseError);
-            // If parsing fails, attempt to extract JSON using regex
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
-            } else {
-                throw new Error('Failed to parse Gemini API response');
-            }
-        }
-    } catch (error) {
-        console.error('Error calling Gemini API:', error);
-        throw new Error(`Failed to generate meal plan: ${error.message}`);
-    }
-}
-
-// Route to handle meal plan generation
-router.post('/generate-meal-plan', async (req, res) => {
-    try {
-        const { userInput } = req.body;
-        const mealPlan = await generateMealPlan(userInput);
-        res.json({ mealPlan });
+        res.json({ mealPlan, shoppingList });
     } catch (error) {
         console.error('Error in generate-meal-plan route:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Route to handle shopping list generation
-router.post('/generate-shopping-list', async (req, res) => {
+router.post('/refine-meal-plan', async (req, res) => {
     try {
-        const { mealPlan } = req.body;
-        const shoppingList = [];
+        const { mealPlan, refinementRequest } = req.body;
 
-        for (const meal of mealPlan.meals) {
-            for (const ingredient of meal.ingredients) {
-                try {
-                    const products = await searchProducts(ingredient);
-                    if (products && products.length > 0) {
-                        shoppingList.push({
-                            ingredient,
-                            product: products[0],
-                        });
-                    } else {
-                        shoppingList.push({
-                            ingredient,
-                            product: null,
-                            message: 'No products found'
-                        });
-                    }
-                } catch (error) {
-                    console.error(`Error searching for product: ${ingredient}`, error);
-                    shoppingList.push({
-                        ingredient,
-                        product: null,
-                        error: 'Product search failed'
-                    });
-                }
-            }
-        }
+        const prompt = `Refine the following meal plan based on this request: "${refinementRequest}". 
+    Return the refined meal plan in the same JSON format.
+    Current meal plan: ${JSON.stringify(mealPlan)}`;
 
-        res.json({ shoppingList });
+        const refinedMealPlanText = await generateGeminiResponse(prompt, []);
+        const refinedMealPlan = JSON.parse(refinedMealPlanText);
+
+        // Generate updated shopping list using Kroger API
+        const shoppingList = await generateShoppingList(refinedMealPlan);
+
+        res.json({ refinedMealPlan, shoppingList });
     } catch (error) {
-        console.error('Error in generate-shopping-list route:', error);
+        console.error('Error in refine-meal-plan route:', error);
         res.status(500).json({ error: error.message });
     }
 });
+
+async function generateShoppingList(mealPlan) {
+    const ingredients = mealPlan.meals.flatMap(meal => meal.ingredients);
+    const shoppingList = [];
+
+    for (const ingredient of ingredients) {
+        try {
+            const products = await searchProducts(ingredient);
+            if (products.length > 0) {
+                shoppingList.push({
+                    ingredient,
+                    product: products[0]
+                });
+            } else {
+                shoppingList.push({
+                    ingredient,
+                    message: 'No matching product found'
+                });
+            }
+        } catch (error) {
+            console.error(`Error searching for product: ${ingredient}`, error);
+            shoppingList.push({
+                ingredient,
+                error: 'Error searching for product'
+            });
+        }
+    }
+
+    return shoppingList;
+}
 
 module.exports = router;

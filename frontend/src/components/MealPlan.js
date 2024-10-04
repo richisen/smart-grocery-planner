@@ -1,22 +1,27 @@
-import React from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 
-function MealPlan({ mealPlan, onShoppingListGenerated }) {
-    const [isLoading, setIsLoading] = React.useState(false);
-    const [error, setError] = React.useState(null);
+function MealPlan({ mealPlan, onRefinementRequest }) {
+    const [refinementInput, setRefinementInput] = useState('');
+    const [isRefining, setIsRefining] = useState(false);
 
-    const handleGenerateShoppingList = async () => {
-        setIsLoading(true);
-        setError(null);
+    const handleRefinementRequest = async () => {
+        if (refinementInput.trim() === '') return;
+
+        setIsRefining(true);
 
         try {
-            const response = await axios.post(`${process.env.REACT_APP_API_URL}/generate-shopping-list`, { mealPlan });
-            onShoppingListGenerated(response.data.shoppingList);
+            const response = await axios.post('/api/refine-meal-plan', {
+                mealPlan,
+                refinementRequest: refinementInput
+            });
+            setRefinementInput('');
+            onRefinementRequest(response.data.refinedMealPlan, response.data.shoppingList);
         } catch (error) {
-            setError('Failed to generate shopping list. Please try again.');
-            console.error('Error generating shopping list:', error);
+            console.error('Error refining meal plan:', error);
+            alert('Sorry, there was an error refining your meal plan. Please try again.');
         } finally {
-            setIsLoading(false);
+            setIsRefining(false);
         }
     };
 
@@ -33,10 +38,18 @@ function MealPlan({ mealPlan, onShoppingListGenerated }) {
                     </ul>
                 </div>
             ))}
-            <button onClick={handleGenerateShoppingList} disabled={isLoading}>
-                {isLoading ? 'Generating...' : 'Generate Shopping List'}
-            </button>
-            {error && <p className="error">{error}</p>}
+            <div className="refinement-input">
+                <input
+                    type="text"
+                    value={refinementInput}
+                    onChange={(e) => setRefinementInput(e.target.value)}
+                    placeholder="Request changes to your meal plan..."
+                    disabled={isRefining}
+                />
+                <button onClick={handleRefinementRequest} disabled={isRefining}>
+                    {isRefining ? 'Refining...' : 'Refine Plan'}
+                </button>
+            </div>
         </div>
     );
 }
